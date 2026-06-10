@@ -71,8 +71,8 @@ export async function resolveEntry(
 /** Checks if an entry's path matches any exclusion path. */
 export function isExcluded(entry: DiskEntry, exclusions: string[]): boolean {
   if (entry.isDockerEntry) return false;
-  return exclusions.some((ex) =>
-    entry.absolutePath === ex || entry.absolutePath.startsWith(ex + path.sep),
+  return exclusions.some(
+    (ex) => entry.absolutePath === ex || entry.absolutePath.startsWith(ex + path.sep),
   );
 }
 
@@ -81,4 +81,53 @@ export function getEffectiveExclusions(config: Config, cliPaths?: string[]): str
   const configExclusions = config.getExclusions();
   const cliExclusions = (cliPaths ?? []).map((p) => expandPath(p));
   return [...new Set([...configExclusions, ...cliExclusions])];
+}
+
+/** Checks config + CLI whitelist patterns against an entry. */
+export function isWhitelisted(
+  entry: DiskEntry,
+  config: Config,
+  cliPatterns: string[] = [],
+): boolean {
+  const patterns = [
+    ...config.getWhitelist(entry.category),
+    ...cliPatterns.map((pattern) => normaliseCliPattern(pattern)),
+  ];
+  if (patterns.length === 0) return false;
+
+  const candidates = [
+    entry.absolutePath,
+    entry.displayPath,
+    entry.artifactType.label,
+    entry.category,
+  ]
+    .filter((x): x is string => typeof x === 'string')
+    .map((x) => x.toLowerCase());
+
+  return patterns.some((pattern) => {
+    const normalized = pattern.toLowerCase();
+    return candidates.some((candidate) => matchesPattern(candidate, normalized));
+  });
+}
+
+function matchesPattern(candidate: string, pattern: string): boolean {
+  if (candidate === pattern) return true;
+  if (!pattern.includes('*')) return false;
+  const escaped = pattern
+    .split('*')
+    .map((part) => part.replace(/[|\\{}()[\]^$+?.]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${escaped}$`).test(candidate);
+}
+
+function normaliseCliPattern(pattern: string): string {
+  if (
+    pattern.startsWith('~/') ||
+    pattern.startsWith('/') ||
+    pattern.startsWith('./') ||
+    pattern.startsWith('../')
+  ) {
+    return expandPath(pattern).replace(/\/+$/, '');
+  }
+  return pattern;
 }

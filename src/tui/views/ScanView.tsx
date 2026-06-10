@@ -4,6 +4,7 @@ import { EntryTable } from '../components/EntryTable.js';
 import { StatusBar } from '../components/StatusBar.js';
 import { useKeyBindings } from '../hooks/useKeyBindings.js';
 import { DiskEntry } from '../../types/index.js';
+import type { ScanProgress } from '../../interfaces/IScanner.js';
 import { formatBytes } from '../../core/DiskScanner.js';
 import { parseMinSize } from '../../commands/ListCommand.js';
 import { ArtCanvas } from '../art/ArtCanvas.js';
@@ -15,6 +16,7 @@ interface ScanViewProps {
   data: DiskEntry[] | null;
   loading: boolean;
   error: string | null;
+  progress?: ScanProgress | null;
   scan: (artifactOnly: boolean) => void;
   // Navigation
   onDetail: (entry: DiskEntry, all: DiskEntry[]) => void;
@@ -30,13 +32,20 @@ interface ScanViewProps {
 }
 
 export function ScanView({
-  data, loading, error, scan,
-  onDetail, onCleanEntry,
+  data,
+  loading,
+  error,
+  progress,
+  scan,
+  onDetail,
+  onCleanEntry,
   isActive,
   viewportHeight = 15,
   viewportWidth = 60,
-  allMode, onAllModeChange,
-  sortMode, onSortModeChange,
+  allMode,
+  onAllModeChange,
+  sortMode,
+  onSortModeChange,
 }: ScanViewProps) {
   const [cursor, setCursor] = useState(0);
   const [filterInput, setFilterInput] = useState('');
@@ -49,9 +58,15 @@ export function ScanView({
     let list = [...data];
     if (minBytes) list = list.filter((e) => e.sizeBytes >= minBytes);
     switch (sortMode) {
-      case 'size': list.sort((a, b) => b.sizeBytes - a.sizeBytes); break;
-      case 'age':  list.sort((a, b) => b.ageMs - a.ageMs); break;
-      case 'type': list.sort((a, b) => a.artifactType.label.localeCompare(b.artifactType.label)); break;
+      case 'size':
+        list.sort((a, b) => b.sizeBytes - a.sizeBytes);
+        break;
+      case 'age':
+        list.sort((a, b) => b.ageMs - a.ageMs);
+        break;
+      case 'type':
+        list.sort((a, b) => a.artifactType.label.localeCompare(b.artifactType.label));
+        break;
     }
     return list;
   }, [data, sortMode, minBytes]);
@@ -73,82 +88,124 @@ export function ScanView({
     return () => clearTimeout(timer);
   }, [notice]);
 
-  useKeyBindings({
-    onUp:   () => setCursor((c) => Math.max(0, c - 1)),
-    onDown: () => setCursor((c) => Math.min(Math.max(0, sorted.length - 1), c + 1)),
-    onEnter: () => {
-      if (showFilter) {
-        const parsed = parseMinSize(filterInput);
-        setMinBytes(!isNaN(parsed) && parsed > 0 ? parsed : undefined);
-        setShowFilter(false);
-        setCursor(0);
-        return;
-      }
-      if (selectedEntry) onDetail(selectedEntry, sorted);
-    },
-    onEscape: () => {
-      if (showFilter) { setShowFilter(false); return; }
-    },
-    onKey: (key) => {
-      if (showFilter) {
-        if (key === '\x7f' || key === '\b') setFilterInput((f) => f.slice(0, -1));
-        else if (key.length === 1 && key >= ' ') setFilterInput((f) => f + key);
-        return;
-      }
-      switch (key) {
-        case 's':
-          onSortModeChange(
-            sortMode === 'size' ? 'age' : sortMode === 'age' ? 'type' : 'size'
-          );
-          break;
-        case 'f': {
-          const next = !allMode;
-          onAllModeChange(next);
-          scan(!next);
+  useKeyBindings(
+    {
+      onUp: () => setCursor((c) => Math.max(0, c - 1)),
+      onDown: () => setCursor((c) => Math.min(Math.max(0, sorted.length - 1), c + 1)),
+      onEnter: () => {
+        if (showFilter) {
+          const parsed = parseMinSize(filterInput);
+          setMinBytes(!isNaN(parsed) && parsed > 0 ? parsed : undefined);
+          setShowFilter(false);
           setCursor(0);
-          break;
+          return;
         }
-        case '/':
-          setShowFilter(true);
-          setFilterInput('');
-          break;
-        case 'c':
-          if (selectedEntry && canCleanSelected) {
-            onCleanEntry(selectedEntry);
-          } else if (selectedEntry) {
-            setNotice(selectedPolicy === 'locked'
-              ? 'Locked. Open detail to inspect.'
-              : 'Inspect only. Open detail to review.');
+        if (selectedEntry) onDetail(selectedEntry, sorted);
+      },
+      onEscape: () => {
+        if (showFilter) {
+          setShowFilter(false);
+          return;
+        }
+      },
+      onKey: (key) => {
+        if (showFilter) {
+          if (key === '\x7f' || key === '\b') setFilterInput((f) => f.slice(0, -1));
+          else if (key.length === 1 && key >= ' ') setFilterInput((f) => f + key);
+          return;
+        }
+        switch (key) {
+          case 's':
+            onSortModeChange(sortMode === 'size' ? 'age' : sortMode === 'age' ? 'type' : 'size');
+            break;
+          case 'f': {
+            const next = !allMode;
+            onAllModeChange(next);
+            scan(!next);
+            setCursor(0);
+            break;
           }
-          break;
-        case 'r':
-          scan(!allMode);
-          setCursor(0);
-          break;
-      }
+          case '/':
+            setShowFilter(true);
+            setFilterInput('');
+            break;
+          case 'c':
+            if (selectedEntry && canCleanSelected) {
+              onCleanEntry(selectedEntry);
+            } else if (selectedEntry) {
+              setNotice(
+                selectedPolicy === 'locked'
+                  ? 'Locked. Open detail to inspect.'
+                  : 'Inspect only. Open detail to review.',
+              );
+            }
+            break;
+          case 'r':
+            scan(!allMode);
+            setCursor(0);
+            break;
+        }
+      },
     },
-  }, isActive && !loading);
+    isActive && !loading,
+  );
 
   return (
     <Box flexDirection="column" paddingX={1}>
       {/* Controls bar */}
       <Box marginTop={1} gap={2}>
-        <Text color="gray">Sort: <Text color="cyan" bold>{sortMode}</Text></Text>
-        <Text color="gray">Scope: <Text color="cyan" bold>{allMode ? 'all large dirs' : 'artifacts'}</Text></Text>
-        {minBytes && <Text color="gray">Min: <Text color="yellow">{formatBytes(minBytes)}</Text></Text>}
+        <Text color="gray">
+          Sort:{' '}
+          <Text color="cyan" bold>
+            {sortMode}
+          </Text>
+        </Text>
+        <Text color="gray">
+          Scope:{' '}
+          <Text color="cyan" bold>
+            {allMode ? 'all large dirs' : 'artifacts'}
+          </Text>
+        </Text>
+        {minBytes && (
+          <Text color="gray">
+            Min: <Text color="yellow">{formatBytes(minBytes)}</Text>
+          </Text>
+        )}
         {showFilter && (
-          <Text color="yellow">Size: <Text color="white">{filterInput || '_'}</Text> <Text color="gray">(Enter apply, Esc cancel)</Text></Text>
+          <Text color="yellow">
+            Size: <Text color="white">{filterInput || '_'}</Text>{' '}
+            <Text color="gray">(Enter apply, Esc cancel)</Text>
+          </Text>
         )}
       </Box>
 
       {loading && (
         <Box flexDirection="column" marginTop={1} width={viewportWidth} alignItems="center">
-          <ArtCanvas mode="scan" width={loadingArtWidth} height={loadingArtHeight} fps={8} color="cyan" />
+          <ArtCanvas
+            mode="scan"
+            width={loadingArtWidth}
+            height={loadingArtHeight}
+            fps={8}
+            color="cyan"
+          />
           <Text color="cyan"> Scanning your filesystem{'\u2026'}</Text>
+          {progress && (
+            <Text color="gray">
+              {progress.phase === 'size'
+                ? ` sizing ${progress.scanned}/${progress.total} \u00b7 ${progress.found} found`
+                : progress.phase === 'docker'
+                  ? ' checking Docker\u2026'
+                  : ' searching\u2026'}
+            </Text>
+          )}
         </Box>
       )}
 
-      {error && <Box marginTop={1}><Text color="red">Error: {error}</Text></Box>}
+      {error && (
+        <Box marginTop={1}>
+          <Text color="red">Error: {error}</Text>
+        </Box>
+      )}
 
       {notice && (
         <Box marginTop={1}>
@@ -157,11 +214,7 @@ export function ScanView({
       )}
 
       {!loading && sorted.length > 0 && (
-        <EntryTable
-          entries={sorted}
-          cursorIndex={cursor}
-          viewportHeight={viewportHeight}
-        />
+        <EntryTable entries={sorted} cursorIndex={cursor} viewportHeight={viewportHeight} />
       )}
 
       {!loading && data && sorted.length === 0 && (
@@ -171,7 +224,11 @@ export function ScanView({
       )}
 
       <StatusBar
-        left={!loading && data ? `${sorted.length} entries \u00b7 ${formatBytes(statusBytes)} ${spaceLabel}` : undefined}
+        left={
+          !loading && data
+            ? `${sorted.length} entries \u00b7 ${formatBytes(statusBytes)} ${spaceLabel}`
+            : undefined
+        }
         hints={[
           '\u2191\u2193 navigate',
           canCleanSelected ? 'Enter detail' : 'Enter inspect',

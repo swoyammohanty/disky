@@ -9,11 +9,16 @@ export interface ActionItem {
 }
 
 export const ACTIONS: ActionItem[] = [
-  { key: 's', label: 'Scan',  content: 'entries' },
-  { key: 'c', label: 'Clean', content: 'clean'   },
-  { key: 'w', label: 'Watch', content: 'watch'   },
-  { key: 'q', label: 'Quit',  content: ''        },
-  { key: '?', label: 'Help',  content: ''        },
+  { key: 's', label: 'Scan', content: 'entries' },
+  { key: 'c', label: 'Clean', content: 'clean' },
+  { key: 'w', label: 'Watch', content: 'watch' },
+  { key: 'x', label: 'Status', content: 'status' },
+  { key: 'a', label: 'Analyze', content: 'analyze' },
+  { key: 'e', label: 'Sweep', content: 'sweep' },
+  { key: 'h', label: 'History', content: 'history' },
+  { key: 'u', label: 'Uninstall', content: 'uninstall' },
+  { key: 'q', label: 'Quit', content: '' },
+  { key: '?', label: 'Help', content: '' },
 ];
 
 interface ActionsPanelProps {
@@ -28,17 +33,25 @@ export function ActionsPanel({ isActive, height, mainContent, cursor }: ActionsP
   const color = isActive ? 'cyan' : 'gray';
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={color} height={height} overflow="hidden">
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderColor={color}
+      height={height}
+      overflow="hidden"
+    >
       <Text color={color}>─ [4] Actions</Text>
       {ACTIONS.map((a, i) => {
         const isCurrent = a.content !== '' && a.content === mainContent;
-        const isCursor  = isActive && i === cursor;
+        const isCursor = isActive && i === cursor;
         return (
           <Box key={a.key}>
             <Text color={isCursor ? 'cyan' : isCurrent ? 'cyan' : 'gray'}>
               {isCursor ? ' \u25b6 ' : isCurrent ? ' \u00b7 ' : '   '}
             </Text>
-            <Text color="cyan" bold>[{a.key}]</Text>
+            <Text color="cyan" bold>
+              [{a.key}]
+            </Text>
             <Text color={isCursor || isCurrent ? 'white' : 'gray'}> {a.label}</Text>
           </Box>
         );

@@ -1,11 +1,17 @@
-import { execSync, execFileSync } from 'child_process';
 import { ICommand } from '../interfaces/ICommand.js';
 import { IScanner } from '../interfaces/IScanner.js';
 import { DiskScanner, formatBytes } from '../core/DiskScanner.js';
 import { ScanCache } from '../core/ScanCache.js';
 import { Config } from '../core/Config.js';
-import { resolveEntry, promptConfirm, isExcluded, getEffectiveExclusions } from '../core/EntryResolver.js';
-import { canForceClean, getCleanPolicy, isAutoCleanable } from '../core/CleanPolicy.js';
+import {
+  resolveEntry,
+  promptConfirm,
+  isExcluded,
+  getEffectiveExclusions,
+  isWhitelisted,
+} from '../core/EntryResolver.js';
+import { getCleanPolicy, isAutoCleanable } from '../core/CleanPolicy.js';
+import { CleanService } from '../clean/CleanService.js';
 import { TableRenderer } from '../renderers/TableRenderer.js';
 import { CleanRenderer, RemovalResult } from '../renderers/CleanRenderer.js';
 import { Colors } from '../renderers/Colors.js';
@@ -20,6 +26,8 @@ interface CleanCommandOptions {
   dryRun?: boolean;
   /** CLI-provided paths to exclude from cleanup. */
   excludePaths?: string[];
+  /** CLI-provided patterns to protect during cleanup. */
+  whitelistPatterns?: string[];
   /** Allow targeted removal of locked entries. Never valid for bulk cleanup. */
   force?: boolean;
 }
@@ -33,21 +41,30 @@ export class CleanCommand implements ICommand {
   private readonly config: Config;
   private readonly cleanRenderer: CleanRenderer;
   private readonly tableRenderer: TableRenderer;
+  private readonly cleanService: CleanService;
 
   constructor(
     private readonly options: CleanCommandOptions = {},
     scanner?: IScanner,
+    cleanService?: CleanService,
   ) {
     this.scanner = scanner ?? new DiskScanner();
     this.cache = new ScanCache();
     this.config = new Config();
     this.cleanRenderer = new CleanRenderer();
     this.tableRenderer = new TableRenderer();
+    this.cleanService = cleanService ?? new CleanService();
   }
 
   async execute(): Promise<void> {
-    if (this.options.force && this.options.id === undefined && this.options.targetPath === undefined) {
-      console.log(`\n  ${Colors.error('--force requires a target ID or path. Bulk force cleanup is not supported.')}\n`);
+    if (
+      this.options.force &&
+      this.options.id === undefined &&
+      this.options.targetPath === undefined
+    ) {
+      console.log(
+        `\n  ${Colors.error('--force requires a target ID or path. Bulk force cleanup is not supported.')}\n`,
+      );
       return;
     }
 
@@ -64,9 +81,10 @@ export class CleanCommand implements ICommand {
     const entry = await resolveEntry(this.options, this.scanner, this.cache);
 
     if (!entry) {
-      const target = this.options.id !== undefined
-        ? `ID ${this.options.id}`
-        : (this.options.targetPath ?? 'unknown');
+      const target =
+        this.options.id !== undefined
+          ? `ID ${this.options.id}`
+          : (this.options.targetPath ?? 'unknown');
       console.log(`\n  ${Colors.error(`No entry found for ${target}`)}\n`);
       return;
     }
@@ -75,36 +93,60 @@ export class CleanCommand implements ICommand {
     console.log('');
 
     const label = entry.artifactType.label;
-    const loc   = entry.project ?? entry.displayPath;
+    const loc = entry.project ?? entry.displayPath;
     const policy = getCleanPolicy(entry.artifactType);
     const exclusions = getEffectiveExclusions(this.config, this.options.excludePaths);
     const excluded = isExcluded(entry, exclusions);
+    const whitelisted = isWhitelisted(entry, this.config, this.options.whitelistPatterns);
 
     if (this.options.dryRun) {
       if (excluded) {
-        console.log(`  ${Colors.prompt('[DRY RUN]')} ${loc} is in your exclusion list — would be skipped`);
+        console.log(
+          `  ${Colors.prompt('[DRY RUN]')} ${loc} is in your exclusion list — would be skipped`,
+        );
+      } else if (whitelisted) {
+        console.log(`  ${Colors.prompt('[DRY RUN]')} ${loc} is whitelisted — would be skipped`);
       } else if (policy === 'locked' && !this.options.force) {
         console.log(`  ${Colors.prompt('[DRY RUN]')} ${loc} is locked — would be skipped`);
-        console.log(`  ${Colors.dim(entry.artifactType.cleanReason ?? 'Use --force with a target to remove it.')}`);
+        console.log(
+          `  ${Colors.dim(entry.artifactType.cleanReason ?? 'Use --force with a target to remove it.')}`,
+        );
       } else if (policy === 'inspect') {
         console.log(`  ${Colors.prompt('[DRY RUN]')} ${loc} is inspect-only — would be skipped`);
-        console.log(`  ${Colors.dim(entry.artifactType.cleanReason ?? 'Review it manually before removing anything.')}`);
+        console.log(
+          `  ${Colors.dim(entry.artifactType.cleanReason ?? 'Review it manually before removing anything.')}`,
+        );
       } else {
         const action = policy === 'locked' ? 'Would force delete' : 'Would delete';
-        console.log(`  ${Colors.prompt('[DRY RUN]')} ${action} ${label} at ${loc} (${entry.sizeHuman})`);
+        console.log(
+          `  ${Colors.prompt('[DRY RUN]')} ${action} ${label} at ${loc} (${entry.sizeHuman})`,
+        );
       }
       console.log(`  ${Colors.dim('No files were modified.')}\n`);
       return;
     }
 
+    if (whitelisted) {
+      console.log(
+        `  ${Colors.dim('Whitelisted entry.')} Remove it from disky whitelist before cleaning.\n`,
+      );
+      return;
+    }
+
     if (policy === 'inspect') {
-      console.log(`  ${Colors.dim('Inspect-only entry.')} ${entry.artifactType.cleanReason ?? 'Review it manually before removing anything.'}\n`);
+      console.log(
+        `  ${Colors.dim('Inspect-only entry.')} ${entry.artifactType.cleanReason ?? 'Review it manually before removing anything.'}\n`,
+      );
       return;
     }
 
     if (policy === 'locked' && !this.options.force) {
-      console.log(`  ${Colors.dim('Locked entry.')} ${entry.artifactType.cleanReason ?? 'Default clean skips this entry.'}`);
-      console.log(`  ${Colors.dim(`Use disky clean ${entry.id} --force if you really want to remove it.`)}\n`);
+      console.log(
+        `  ${Colors.dim('Locked entry.')} ${entry.artifactType.cleanReason ?? 'Default clean skips this entry.'}`,
+      );
+      console.log(
+        `  ${Colors.dim(`Use disky clean ${entry.id} --force if you really want to remove it.`)}\n`,
+      );
       return;
     }
 
@@ -143,25 +185,42 @@ export class CleanCommand implements ICommand {
     const exclusions = getEffectiveExclusions(this.config, this.options.excludePaths);
     const excludedCount = safeEntries.filter((e) => isExcluded(e, exclusions)).length;
     safeEntries = safeEntries.filter((e) => !isExcluded(e, exclusions));
+    const whitelistedCount = safeEntries.filter((e) =>
+      isWhitelisted(e, this.config, this.options.whitelistPatterns),
+    ).length;
+    safeEntries = safeEntries.filter(
+      (e) => !isWhitelisted(e, this.config, this.options.whitelistPatterns),
+    );
 
     process.stdout.write(this.cleanRenderer.render(safeEntries));
 
     if (excludedCount > 0) {
-      console.log(`  ${Colors.dim(`Skipping ${excludedCount} excluded ${excludedCount === 1 ? 'entry' : 'entries'}`)}\n`);
+      console.log(
+        `  ${Colors.dim(`Skipping ${excludedCount} excluded ${excludedCount === 1 ? 'entry' : 'entries'}`)}\n`,
+      );
+    }
+    if (whitelistedCount > 0) {
+      console.log(
+        `  ${Colors.dim(`Skipping ${whitelistedCount} whitelisted ${whitelistedCount === 1 ? 'entry' : 'entries'}`)}\n`,
+      );
     }
     if (lockedCount > 0 || inspectCount > 0) {
       const parts = [
         lockedCount > 0 ? `${lockedCount} locked` : null,
         inspectCount > 0 ? `${inspectCount} inspect-only` : null,
       ].filter(Boolean);
-      console.log(`  ${Colors.dim(`Skipping ${parts.join(' and ')} ${lockedCount + inspectCount === 1 ? 'entry' : 'entries'}`)}\n`);
+      console.log(
+        `  ${Colors.dim(`Skipping ${parts.join(' and ')} ${lockedCount + inspectCount === 1 ? 'entry' : 'entries'}`)}\n`,
+      );
     }
 
     if (safeEntries.length === 0) return;
 
     if (this.options.dryRun) {
       const totalBytes = safeEntries.reduce((sum, e) => sum + e.sizeBytes, 0);
-      console.log(`  ${Colors.prompt('[DRY RUN]')} Would remove ${safeEntries.length} ${safeEntries.length === 1 ? 'entry' : 'entries'} totaling ${formatBytes(totalBytes)}`);
+      console.log(
+        `  ${Colors.prompt('[DRY RUN]')} Would remove ${safeEntries.length} ${safeEntries.length === 1 ? 'entry' : 'entries'} totaling ${formatBytes(totalBytes)}`,
+      );
       console.log(`  ${Colors.dim('No files were modified.')}\n`);
       return;
     }
@@ -189,28 +248,11 @@ export class CleanCommand implements ICommand {
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   /**
-   * Removes an entry from disk (or prunes Docker resources) and returns the result.
-   * Returns null on failure.
+   * Removes an entry via the shared CleanService (which records the operation to
+   * the audit log). Returns the result on success, or null on failure.
    */
   private remove(entry: DiskEntry, options: { force?: boolean } = {}): RemovalResult | null {
-    try {
-      if (entry.isDockerEntry) {
-        execSync('docker system prune -f 2>/dev/null', { stdio: 'pipe' });
-      } else if (!isAutoCleanable(entry) && !(options.force && canForceClean(entry))) {
-        return null;
-      } else {
-        execFileSync('rm', ['-rf', entry.absolutePath], { stdio: 'pipe' });
-      }
-
-      return {
-        id: entry.id,
-        label: entry.artifactType.label,
-        displayPath: entry.displayPath,
-        bytesFreed: entry.sizeBytes,
-      };
-    } catch {
-      return null;
-    }
+    const result = this.cleanService.clean(entry, options);
+    return result.success ? result : null;
   }
-
 }
